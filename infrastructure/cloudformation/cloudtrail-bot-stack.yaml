@@ -436,6 +436,12 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-InstanceId'
 
+  InstancePrivateIp:
+    Description: Private IP address of the EC2 instance
+    Value: !GetAtt BotInstance.PrivateIp
+    Export:
+      Name: !Sub '${AWS::StackName}-PrivateIp'
+
   SecurityGroupId:
     Description: Security Group ID
     Value: !Ref BotSecurityGroup
@@ -454,10 +460,14 @@ Outputs:
     Export:
       Name: !Sub '${AWS::StackName}-LogGroupName'
 
-  SSHCommand:
-    Description: SSH command to connect to the instance
-    Value: !Sub 'ssh -i ${KeyPairName}.pem ec2-user@${BotInstance.PublicIp}'
+  SSHCommandPrivate:
+    Description: SSH command to connect to the instance (use bastion or SSM Session Manager)
+    Value: !Sub 'ssh -i ${KeyPairName}.pem ec2-user@${BotInstance.PrivateIp}'
     Condition: HasKeyPair
+
+  SSMSessionCommand:
+    Description: AWS SSM Session Manager command to connect (recommended)
+    Value: !Sub 'aws ssm start-session --target ${BotInstance}'
 
   ServiceStatusCommand:
     Description: Command to check bot service status
