@@ -39,10 +39,13 @@ Socket Mode를 사용하면 공개 URL 없이 WebSocket 연결을 통해 이벤�
 2. **Enable Events**를 활성화합니다.
 3. **Subscribe to bot events** 섹션에서 다음 이벤트를 추가합니다:
 
-| Event | 설명 |
-|-------|------|
-| `app_mention` | Bot이 멘션되었을 때 트리거 |
-| `message.channels` | 공개 채널에서 메시지가 전송되었을 때 (선택) |
+| Event | 필수 | 설명 |
+|-------|------|------|
+| `app_mention` | ✅ | Bot이 멘션되었을 때 트리거 |
+| `message.channels` | ✅ | 공개 채널에서 스레드 대화 이어가기 |
+| `message.groups` | 선택 | 비공개 채널에서 스레드 대화 이어가기 |
+
+> ⚠️ **중요**: `message.channels` 이벤트가 없으면 스레드에서 멘션 없이 대화를 이어갈 수 없습니다!
 
 ## 5. App 설치
 

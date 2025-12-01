@@ -2,6 +2,7 @@
 Slack Bolt 이벤트 핸들러
 
 Slack App Mention 이벤트를 처리하고 스레드에 응답합니다.
+스레드 내 대화 컨텍스트를 유지하여 연속 대화가 가능합니다.
 """
 
 import os
@@ -14,6 +15,10 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_sdk.web.async_client import AsyncWebClient
 
 from src.agent import process_message
+from src.conversation import (
+    get_conversation_manager,
+    build_contextual_prompt,
+)
 
 # Slack App 인스턴스
 _slack_app: Optional[AsyncApp] = None
@@ -43,6 +48,7 @@ def register_event_handlers(app: AsyncApp):
         """
         Bot이 멘션되었을 때 처리합니다.
         멘션된 메시지의 스레드에서 대화를 진행합니다.
+        대화 컨텍스트를 유지하여 이전 대화 내용을 참조합니다.
         """
         try:
             # 메시지 정보 추출
@@ -63,10 +69,15 @@ def register_event_handlers(app: AsyncApp):
                          "예시:\n"
                          "• `계정 123456789012의 최근 활동을 조회해줘`\n"
                          "• `보안 분석을 해줘`\n"
-                         "• `어제 콘솔 로그인 기록을 확인해줘`",
+                         "• `어제 콘솔 로그인 기록을 확인해줘`\n\n"
+                         "💡 스레드에서 대화를 이어갈 수 있습니다!",
                     thread_ts=thread_ts
                 )
                 return
+            
+            # 대화 컨텍스트 가져오기
+            conv_manager = get_conversation_manager()
+            conversation = conv_manager.get_or_create(channel, thread_ts)
             
             # 처리 중 메시지 전송
             thinking_msg = await say(
@@ -74,8 +85,22 @@ def register_event_handlers(app: AsyncApp):
                 thread_ts=thread_ts
             )
             
+            # 대화 컨텍스트를 포함한 프롬프트 생성
+            contextual_prompt = build_contextual_prompt(clean_text, conversation)
+            
+            # 사용자 메시지 저장
+            conversation.add_user_message(clean_text)
+            
+            # 계정 ID 추출 (12자리 숫자)
+            account_match = re.search(r'\b(\d{12})\b', clean_text)
+            if account_match:
+                conversation.account_id = account_match.group(1)
+            
             # Agent로 메시지 처리
-            response = process_message(clean_text)
+            response = process_message(contextual_prompt)
+            
+            # 어시스턴트 응답 저장
+            conversation.add_assistant_message(response)
             
             # 응답이 길면 분할
             max_length = 3900  # Slack 메시지 제한 (4000자)에 여유 둠
@@ -102,7 +127,7 @@ def register_event_handlers(app: AsyncApp):
                     remaining = remaining[max_length:]
                     await say(text=chunk, thread_ts=thread_ts)
             
-            logger.info(f"응답 완료: channel={channel}, thread_ts={thread_ts}")
+            logger.info(f"응답 완료: channel={channel}, thread_ts={thread_ts}, context_size={len(conversation.messages)}")
             
         except Exception as e:
             logger.error(f"멘션 처리 오류: {e}")
@@ -115,7 +140,8 @@ def register_event_handlers(app: AsyncApp):
     async def handle_message(event: dict, say, client: AsyncWebClient, logger):
         """
         스레드 내 메시지를 처리합니다.
-        Bot이 참여 중인 스레드에서 추가 메시지가 오면 응답합니다.
+        Bot이 참여 중인 스레드에서 멘션 없이도 대화를 이어갑니다.
+        대화 컨텍스트를 유지하여 이전 내용을 참조합니다.
         """
         # Bot 자신의 메시지는 무시
         if event.get("bot_id"):
@@ -139,21 +165,29 @@ def register_event_handlers(app: AsyncApp):
         ts = event.get("ts")
         
         try:
-            # 스레드의 기존 메시지 조회하여 Bot이 참여 중인지 확인
-            result = await client.conversations_replies(
-                channel=channel,
-                ts=thread_ts,
-                limit=10
-            )
+            # 대화 컨텍스트 확인 (Bot이 참여한 스레드인지)
+            conv_manager = get_conversation_manager()
+            conversation = conv_manager.get(channel, thread_ts)
             
-            messages = result.get("messages", [])
-            bot_participated = any(msg.get("bot_id") for msg in messages)
+            # 대화 컨텍스트가 없으면 Slack API로 확인
+            if not conversation:
+                result = await client.conversations_replies(
+                    channel=channel,
+                    ts=thread_ts,
+                    limit=10
+                )
+                
+                messages = result.get("messages", [])
+                bot_participated = any(msg.get("bot_id") for msg in messages)
+                
+                if not bot_participated:
+                    # Bot이 참여하지 않은 스레드는 무시
+                    return
+                
+                # 기존 스레드에서 대화 컨텍스트 생성
+                conversation = conv_manager.get_or_create(channel, thread_ts)
             
-            if not bot_participated:
-                # Bot이 참여하지 않은 스레드는 무시
-                return
-            
-            logger.info(f"스레드 메시지 수신: channel={channel}, thread_ts={thread_ts}")
+            logger.info(f"스레드 대화 계속: channel={channel}, thread_ts={thread_ts}")
             
             # 처리 중 표시
             thinking_msg = await say(
@@ -161,18 +195,53 @@ def register_event_handlers(app: AsyncApp):
                 thread_ts=thread_ts
             )
             
-            # Agent로 처리
-            response = process_message(text)
+            # 대화 컨텍스트를 포함한 프롬프트 생성
+            contextual_prompt = build_contextual_prompt(text, conversation)
             
-            # 응답 업데이트
-            await client.chat_update(
-                channel=channel,
-                ts=thinking_msg["ts"],
-                text=response
-            )
+            # 사용자 메시지 저장
+            conversation.add_user_message(text)
+            
+            # 계정 ID 추출 (12자리 숫자) - 새로 언급된 계정이 있으면 업데이트
+            account_match = re.search(r'\b(\d{12})\b', text)
+            if account_match:
+                conversation.account_id = account_match.group(1)
+            
+            # Agent로 처리
+            response = process_message(contextual_prompt)
+            
+            # 어시스턴트 응답 저장
+            conversation.add_assistant_message(response)
+            
+            # 응답이 길면 분할
+            max_length = 3900
+            
+            if len(response) <= max_length:
+                await client.chat_update(
+                    channel=channel,
+                    ts=thinking_msg["ts"],
+                    text=response
+                )
+            else:
+                await client.chat_update(
+                    channel=channel,
+                    ts=thinking_msg["ts"],
+                    text=response[:max_length]
+                )
+                
+                remaining = response[max_length:]
+                while remaining:
+                    chunk = remaining[:max_length]
+                    remaining = remaining[max_length:]
+                    await say(text=chunk, thread_ts=thread_ts)
+            
+            logger.info(f"스레드 응답 완료: context_size={len(conversation.messages)}")
             
         except Exception as e:
             logger.error(f"스레드 메시지 처리 오류: {e}")
+            await say(
+                text=f"❌ 요청 처리 중 오류가 발생했습니다.\n```{str(e)}```",
+                thread_ts=thread_ts
+            )
     
     @app.event("app_home_opened")
     async def handle_app_home_opened(event: dict, client: AsyncWebClient, logger):
