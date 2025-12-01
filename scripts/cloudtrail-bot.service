@@ -1,0 +1,17 @@
+[Unit]
+Description=CloudTrail Security Bot
+After=network.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/home/ec2-user/cloudtrail-bot
+Environment=PATH=/home/ec2-user/cloudtrail-bot/.venv/bin:/usr/bin
+EnvironmentFile=/home/ec2-user/cloudtrail-bot/.env
+ExecStart=/home/ec2-user/cloudtrail-bot/.venv/bin/python -m src.main
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+

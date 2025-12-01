@@ -1,0 +1,51 @@
+[
+  {
+    "ParameterKey": "VpcId",
+    "ParameterValue": "vpc-xxxxxxxxxxxxxxxxx"
+  },
+  {
+    "ParameterKey": "SubnetId",
+    "ParameterValue": "subnet-xxxxxxxxxxxxxxxxx"
+  },
+  {
+    "ParameterKey": "InstanceType",
+    "ParameterValue": "t3.small"
+  },
+  {
+    "ParameterKey": "KeyPairName",
+    "ParameterValue": "your-key-pair-name"
+  },
+  {
+    "ParameterKey": "SlackBotToken",
+    "ParameterValue": "xoxb-your-bot-token"
+  },
+  {
+    "ParameterKey": "SlackAppToken",
+    "ParameterValue": "xapp-your-app-token"
+  },
+  {
+    "ParameterKey": "EnvironmentType",
+    "ParameterValue": "dev"
+  },
+  {
+    "ParameterKey": "UseAgentCoreRemote",
+    "ParameterValue": "false"
+  },
+  {
+    "ParameterKey": "AgentCoreEndpoint",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "GitRepoUrl",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "S3BucketName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "S3KeyPrefix",
+    "ParameterValue": "cloudtrail-bot/"
+  }
+]
+

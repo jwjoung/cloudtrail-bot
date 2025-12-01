@@ -1,0 +1,469 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudTrail Security Bot - Slack Bot on EC2'
+
+# ============================================
+# Parameters
+# ============================================
+Parameters:
+  # Network Configuration
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the EC2 instance will be launched
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Subnet ID where the EC2 instance will be launched (should have internet access)
+
+  # EC2 Configuration
+  InstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+    Description: EC2 instance type
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: EC2 Key Pair name for SSH access
+    Default: ''
+
+  # Slack Configuration
+  SlackBotToken:
+    Type: String
+    NoEcho: true
+    Description: Slack Bot User OAuth Token (xoxb-...)
+
+  SlackAppToken:
+    Type: String
+    NoEcho: true
+    Description: Slack App-Level Token (xapp-...)
+
+  # Environment Configuration
+  EnvironmentType:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - stg
+      - prd
+    Description: Environment type for DB and SSM parameter paths
+
+  # Optional: AgentCore Configuration
+  UseAgentCoreRemote:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to use AgentCore Runtime remotely
+
+  AgentCoreEndpoint:
+    Type: String
+    Default: ''
+    Description: AgentCore Runtime endpoint URL (required if UseAgentCoreRemote is true)
+
+  # Source Code Configuration
+  GitRepoUrl:
+    Type: String
+    Default: ''
+    Description: Git repository URL for the bot source code (leave empty to use S3)
+
+  S3BucketName:
+    Type: String
+    Default: ''
+    Description: S3 bucket containing the bot source code (alternative to Git)
+
+  S3KeyPrefix:
+    Type: String
+    Default: 'cloudtrail-bot/'
+    Description: S3 key prefix for the source code
+
+# ============================================
+# Conditions
+# ============================================
+Conditions:
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, '']]
+  UseGitRepo: !Not [!Equals [!Ref GitRepoUrl, '']]
+  UseS3Source: !And
+    - !Not [!Equals [!Ref S3BucketName, '']]
+    - !Equals [!Ref GitRepoUrl, '']
+
+# ============================================
+# Mappings
+# ============================================
+Mappings:
+  RegionMap:
+    ap-northeast-2:
+      AMI: ami-0c9c942bd7bf113a2  # Amazon Linux 2023 ARM64
+    ap-northeast-1:
+      AMI: ami-0d52744d6551d851e
+    us-east-1:
+      AMI: ami-0f34c5ae932e6f0e4
+    us-west-2:
+      AMI: ami-0819a8650d6a6c145
+
+# ============================================
+# Resources
+# ============================================
+Resources:
+  # --------------------------------------------
+  # SSM Parameters for Slack Tokens
+  # --------------------------------------------
+  SlackBotTokenParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/slack/bot-token'
+      Type: String
+      Value: !Ref SlackBotToken
+      Description: Slack Bot User OAuth Token
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  SlackAppTokenParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/slack/app-token'
+      Type: String
+      Value: !Ref SlackAppToken
+      Description: Slack App-Level Token
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  # --------------------------------------------
+  # Security Group
+  # --------------------------------------------
+  BotSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'cloudtrail-bot-sg-${EnvironmentType}'
+      GroupDescription: Security group for CloudTrail Bot EC2
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # SSH access (optional - for debugging)
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access
+      SecurityGroupEgress:
+        # All outbound traffic (required for Slack WebSocket, AWS APIs)
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudtrail-bot-sg-${EnvironmentType}'
+        - Key: Environment
+          Value: !Ref EnvironmentType
+
+  # --------------------------------------------
+  # IAM Role for EC2
+  # --------------------------------------------
+  BotInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'cloudtrail-bot-ec2-role-${EnvironmentType}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        # SSM Parameter Store Access
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudtrail-bot/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/fitcloud/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/access-key/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/secret-key/*'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/crossaccountRoleBridge/*'
+
+        # STS AssumeRole for Cross-Account Access
+        - PolicyName: CrossAccountAssumeRole
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sts:AssumeRole
+                Resource: '*'
+
+        # Bedrock Access
+        - PolicyName: BedrockAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                  - bedrock:InvokeModelWithResponseStream
+                Resource: '*'
+
+        # AgentCore Access (if using remote)
+        - PolicyName: AgentCoreAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeAgent
+                Resource: '*'
+
+        # CloudWatch Logs
+        - PolicyName: CloudWatchLogsAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/cloudtrail-bot/*'
+
+        # S3 Access (for source code)
+        - PolicyName: S3SourceAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !If
+                    - UseS3Source
+                    - !Sub 'arn:aws:s3:::${S3BucketName}'
+                    - !Sub 'arn:aws:s3:::${AWS::AccountId}-cloudtrail-bot-source'
+                  - !If
+                    - UseS3Source
+                    - !Sub 'arn:aws:s3:::${S3BucketName}/*'
+                    - !Sub 'arn:aws:s3:::${AWS::AccountId}-cloudtrail-bot-source/*'
+
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentType
+
+  BotInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'cloudtrail-bot-profile-${EnvironmentType}'
+      Roles:
+        - !Ref BotInstanceRole
+
+  # --------------------------------------------
+  # CloudWatch Log Group
+  # --------------------------------------------
+  BotLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/cloudtrail-bot/${EnvironmentType}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Environment
+          Value: !Ref EnvironmentType
+
+  # --------------------------------------------
+  # EC2 Instance
+  # --------------------------------------------
+  BotInstance:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - SlackBotTokenParameter
+      - SlackAppTokenParameter
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref 'AWS::NoValue']
+      IamInstanceProfile: !Ref BotInstanceProfile
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref BotSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+            Encrypted: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          
+          # Logging
+          exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+          echo "Starting CloudTrail Bot setup..."
+          
+          # Update system
+          dnf update -y
+          dnf install -y python3.11 python3.11-pip git
+          
+          # Create application directory
+          mkdir -p /opt/cloudtrail-bot
+          cd /opt/cloudtrail-bot
+          
+          # Clone or download source code
+          if [ -n "${GitRepoUrl}" ]; then
+            echo "Cloning from Git repository..."
+            git clone ${GitRepoUrl} .
+          elif [ -n "${S3BucketName}" ]; then
+            echo "Downloading from S3..."
+            aws s3 sync s3://${S3BucketName}/${S3KeyPrefix} .
+          else
+            echo "No source specified. Creating minimal structure..."
+            # Create minimal structure for manual deployment
+            mkdir -p src/tools
+            touch src/__init__.py src/tools/__init__.py
+          fi
+          
+          # Create virtual environment
+          python3.11 -m venv .venv
+          source .venv/bin/activate
+          
+          # Install dependencies
+          if [ -f requirements.txt ]; then
+            pip install --upgrade pip
+            pip install -r requirements.txt
+          fi
+          
+          # Create environment file
+          cat > /opt/cloudtrail-bot/.env << 'ENVEOF'
+          # Slack Configuration (loaded from SSM)
+          SLACK_BOT_TOKEN_SSM=/cloudtrail-bot/${EnvironmentType}/slack/bot-token
+          SLACK_APP_TOKEN_SSM=/cloudtrail-bot/${EnvironmentType}/slack/app-token
+          
+          # AWS Configuration
+          ENV_TYPE=${EnvironmentType}
+          AWS_REGION=${AWS::Region}
+          
+          # AgentCore Configuration
+          USE_AGENTCORE_REMOTE=${UseAgentCoreRemote}
+          AGENTCORE_ENDPOINT=${AgentCoreEndpoint}
+          
+          # Logging
+          LOG_LEVEL=INFO
+          ENVEOF
+          
+          # Create startup script that loads SSM parameters
+          cat > /opt/cloudtrail-bot/start.sh << 'STARTEOF'
+          #!/bin/bash
+          cd /opt/cloudtrail-bot
+          source .venv/bin/activate
+          
+          # Load Slack tokens from SSM Parameter Store
+          export SLACK_BOT_TOKEN=$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/bot-token" --with-decryption --query 'Parameter.Value' --output text)
+          export SLACK_APP_TOKEN=$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/app-token" --with-decryption --query 'Parameter.Value' --output text)
+          
+          # Load environment file
+          set -a
+          source .env
+          set +a
+          
+          # Start the bot
+          exec python -m src.main
+          STARTEOF
+          chmod +x /opt/cloudtrail-bot/start.sh
+          
+          # Create systemd service
+          cat > /etc/systemd/system/cloudtrail-bot.service << 'SERVICEEOF'
+          [Unit]
+          Description=CloudTrail Security Bot
+          After=network.target
+          
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/cloudtrail-bot
+          ExecStart=/opt/cloudtrail-bot/start.sh
+          Restart=always
+          RestartSec=10
+          StandardOutput=journal
+          StandardError=journal
+          
+          [Install]
+          WantedBy=multi-user.target
+          SERVICEEOF
+          
+          # Enable and start service
+          systemctl daemon-reload
+          systemctl enable cloudtrail-bot
+          
+          # Start service if source code is available
+          if [ -f /opt/cloudtrail-bot/src/main.py ]; then
+            systemctl start cloudtrail-bot
+            echo "CloudTrail Bot service started"
+          else
+            echo "Source code not found. Please deploy manually and start the service."
+          fi
+          
+          echo "CloudTrail Bot setup completed"
+          
+      Tags:
+        - Key: Name
+          Value: !Sub 'cloudtrail-bot-${EnvironmentType}'
+        - Key: Environment
+          Value: !Ref EnvironmentType
+        - Key: Application
+          Value: cloudtrail-bot
+
+# ============================================
+# Outputs
+# ============================================
+Outputs:
+  InstanceId:
+    Description: EC2 Instance ID
+    Value: !Ref BotInstance
+    Export:
+      Name: !Sub '${AWS::StackName}-InstanceId'
+
+  SecurityGroupId:
+    Description: Security Group ID
+    Value: !Ref BotSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+
+  IAMRoleArn:
+    Description: IAM Role ARN for the EC2 instance
+    Value: !GetAtt BotInstanceRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-IAMRoleArn'
+
+  LogGroupName:
+    Description: CloudWatch Log Group name
+    Value: !Ref BotLogGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-LogGroupName'
+
+  SSHCommand:
+    Description: SSH command to connect to the instance
+    Value: !Sub 'ssh -i ${KeyPairName}.pem ec2-user@${BotInstance.PublicIp}'
+    Condition: HasKeyPair
+
+  ServiceStatusCommand:
+    Description: Command to check bot service status
+    Value: 'sudo systemctl status cloudtrail-bot'
+
+  ServiceLogsCommand:
+    Description: Command to view bot service logs
+    Value: 'sudo journalctl -u cloudtrail-bot -f'
+
