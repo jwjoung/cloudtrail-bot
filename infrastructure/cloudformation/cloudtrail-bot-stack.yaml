@@ -81,6 +81,39 @@ Parameters:
     Default: 'cloudtrail-bot/'
     Description: S3 key prefix for the source code
 
+  # Database Configuration (Optional - defaults to SSM Parameter Store)
+  DBHost:
+    Type: String
+    Default: ''
+    Description: Database host (leave empty to use SSM Parameter Store)
+
+  DBPort:
+    Type: String
+    Default: '3306'
+    Description: Database port
+
+  DBUser:
+    Type: String
+    Default: ''
+    Description: Database username (leave empty to use SSM Parameter Store)
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Database password (leave empty to use SSM Parameter Store)
+
+  DBName:
+    Type: String
+    Default: ''
+    Description: Database name (leave empty to use SSM Parameter Store)
+
+  DBSecretTitle:
+    Type: String
+    NoEcho: true
+    Default: ''
+    Description: Secret title for DB encryption (leave empty to use SSM Parameter Store)
+
 # ============================================
 # Conditions
 # ============================================
@@ -90,6 +123,7 @@ Conditions:
   UseS3Source: !And
     - !Not [!Equals [!Ref S3BucketName, '']]
     - !Equals [!Ref GitRepoUrl, '']
+  HasDBConfig: !Not [!Equals [!Ref DBHost, '']]
 
 # ============================================
 # Mappings
@@ -130,6 +164,81 @@ Resources:
       Type: String
       Value: !Ref SlackAppToken
       Description: Slack App-Level Token
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  # --------------------------------------------
+  # SSM Parameters for Database (Optional)
+  # --------------------------------------------
+  DBHostParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/host'
+      Type: String
+      Value: !Ref DBHost
+      Description: Database host
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  DBPortParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/port'
+      Type: String
+      Value: !Ref DBPort
+      Description: Database port
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  DBUserParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/user'
+      Type: String
+      Value: !Ref DBUser
+      Description: Database username
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/password'
+      Type: String
+      Value: !Ref DBPassword
+      Description: Database password
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  DBNameParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/name'
+      Type: String
+      Value: !Ref DBName
+      Description: Database name
+      Tags:
+        Environment: !Ref EnvironmentType
+        Application: cloudtrail-bot
+
+  DBSecretTitleParameter:
+    Type: AWS::SSM::Parameter
+    Condition: HasDBConfig
+    Properties:
+      Name: !Sub '/cloudtrail-bot/${EnvironmentType}/db/secret-title'
+      Type: String
+      Value: !Ref DBSecretTitle
+      Description: Database secret title for encryption
       Tags:
         Environment: !Ref EnvironmentType
         Application: cloudtrail-bot
@@ -346,12 +455,8 @@ Resources:
             pip install -r requirements.txt
           fi
           
-          # Create environment file
-          cat > /opt/cloudtrail-bot/.env << 'ENVEOF'
-          # Slack Configuration (loaded from SSM)
-          SLACK_BOT_TOKEN_SSM=/cloudtrail-bot/${EnvironmentType}/slack/bot-token
-          SLACK_APP_TOKEN_SSM=/cloudtrail-bot/${EnvironmentType}/slack/app-token
-          
+          # Create environment file (non-sensitive values only)
+          cat > /opt/cloudtrail-bot/.env << ENVEOF
           # AWS Configuration
           ENV_TYPE=${EnvironmentType}
           AWS_REGION=${AWS::Region}
@@ -362,22 +467,42 @@ Resources:
           
           # Logging
           LOG_LEVEL=INFO
+          
+          # DB Configuration uses SSM: /cloudtrail-bot/${EnvironmentType}/db/*
+          # or fallback to: /fitcloud/${EnvironmentType}/db/*
           ENVEOF
           
-          # Create startup script that loads SSM parameters
-          cat > /opt/cloudtrail-bot/start.sh << 'STARTEOF'
+          # Create startup script that loads secrets from SSM
+          cat > /opt/cloudtrail-bot/start.sh << STARTEOF
           #!/bin/bash
           cd /opt/cloudtrail-bot
           source .venv/bin/activate
           
-          # Load Slack tokens from SSM Parameter Store
-          export SLACK_BOT_TOKEN=$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/bot-token" --with-decryption --query 'Parameter.Value' --output text)
-          export SLACK_APP_TOKEN=$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/app-token" --with-decryption --query 'Parameter.Value' --output text)
-          
-          # Load environment file
+          # Load environment file first
           set -a
           source .env
           set +a
+          
+          # Load Slack tokens from SSM Parameter Store
+          export SLACK_BOT_TOKEN=\$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/bot-token" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+          export SLACK_APP_TOKEN=\$(aws ssm get-parameter --name "/cloudtrail-bot/${EnvironmentType}/slack/app-token" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+          
+          # Load DB config from cloudtrail-bot SSM path if exists, otherwise use fitcloud path
+          DB_SSM_PREFIX="/cloudtrail-bot/${EnvironmentType}/db"
+          
+          # Try to load from cloudtrail-bot path first
+          DB_HOST_VAL=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/host" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+          if [ -n "\$DB_HOST_VAL" ] && [ "\$DB_HOST_VAL" != "None" ]; then
+            export DB_HOST="\$DB_HOST_VAL"
+            export DB_PORT=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/port" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+            export DB_USER=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/user" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+            export DB_PASSWORD=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/password" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+            export DB_NAME=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/name" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+            export DB_SECRET_TITLE=\$(aws ssm get-parameter --name "${!DB_SSM_PREFIX}/secret-title" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null)
+            echo "Loaded DB config from ${!DB_SSM_PREFIX}"
+          else
+            echo "Using fallback DB config from /fitcloud/${EnvironmentType}/db/*"
+          fi
           
           # Start the bot
           exec python -m src.main

@@ -90,19 +90,51 @@ aws cloudformation create-stack \
 
 ## 파라미터 설명
 
-| 파라미터 | 필수 | 기본값 | 설명 |
-|----------|------|--------|------|
-| VpcId | ✅ | - | EC2를 배치할 VPC ID |
-| SubnetId | ✅ | - | EC2를 배치할 Subnet ID |
-| InstanceType | | t3.small | EC2 인스턴스 타입 |
-| KeyPairName | | - | SSH 접속용 Key Pair |
-| SlackBotToken | ✅ | - | Slack Bot Token (xoxb-...) |
-| SlackAppToken | ✅ | - | Slack App Token (xapp-...) |
-| EnvironmentType | | dev | 환경 타입 (dev/stg/prd) |
-| UseAgentCoreRemote | | false | AgentCore 원격 호출 사용 |
-| AgentCoreEndpoint | | - | AgentCore 엔드포인트 URL |
-| GitRepoUrl | | - | 소스 코드 Git 저장소 URL |
-| S3BucketName | | - | 소스 코드 S3 버킷 |
+### 필수 파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| VpcId | - | EC2를 배치할 VPC ID |
+| SubnetId | - | EC2를 배치할 Subnet ID |
+| SlackBotToken | - | Slack Bot Token (xoxb-...) |
+| SlackAppToken | - | Slack App Token (xapp-...) |
+
+### EC2 설정
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| InstanceType | t3.small | EC2 인스턴스 타입 |
+| KeyPairName | - | SSH 접속용 Key Pair |
+| EnvironmentType | dev | 환경 타입 (dev/stg/prd) |
+
+### AgentCore 설정
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| UseAgentCoreRemote | false | AgentCore 원격 호출 사용 |
+| AgentCoreEndpoint | - | AgentCore 엔드포인트 URL |
+
+### 소스 코드 설정
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| GitRepoUrl | - | 소스 코드 Git 저장소 URL |
+| S3BucketName | - | 소스 코드 S3 버킷 |
+| S3KeyPrefix | cloudtrail-bot/ | S3 키 프리픽스 |
+
+### 데이터베이스 설정 (선택)
+
+DB 파라미터가 비어있으면 SSM Parameter Store에서 자동으로 로드합니다.
+(`/fitcloud/{ENV_TYPE}/db/...` 경로)
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| DBHost | - | 데이터베이스 호스트 (RDS 엔드포인트) |
+| DBPort | 3306 | 데이터베이스 포트 |
+| DBUser | - | 데이터베이스 사용자명 |
+| DBPassword | - | 데이터베이스 비밀번호 |
+| DBName | - | 데이터베이스 이름 |
+| DBSecretTitle | - | DB 암호화용 시크릿 타이틀 |
 
 ## 소스 코드 배포 옵션
 
@@ -143,6 +175,36 @@ scp -i your-key.pem -r src/ requirements.txt ec2-user@<instance-ip>:/opt/cloudtr
 # EC2에서 서비스 재시작
 ssh -i your-key.pem ec2-user@<instance-ip> 'sudo systemctl restart cloudtrail-bot'
 ```
+
+## 데이터베이스 설정
+
+### 옵션 1: SSM Parameter Store 사용 (기본)
+
+DB 파라미터를 비워두면 SSM Parameter Store에서 자동으로 로드합니다:
+- `/fitcloud/{ENV_TYPE}/db/host`
+- `/fitcloud/{ENV_TYPE}/db/user/admin/id`
+- `/fitcloud/{ENV_TYPE}/db/user/admin/pw`
+- `/fitcloud/{ENV_TYPE}/db/db`
+- `/fitcloud/{ENV_TYPE}/db/secret_title`
+
+### 옵션 2: 직접 설정
+
+배포 시 DB 정보를 직접 제공:
+
+```bash
+./deploy-stack.sh \
+    --vpc-id vpc-xxx \
+    --subnet-id subnet-xxx \
+    --bot-token "xoxb-..." \
+    --app-token "xapp-..." \
+    --db-host mydb.rds.amazonaws.com \
+    --db-user admin \
+    --db-password "your-password" \
+    --db-name fitcloud \
+    --db-secret "your-secret-title"
+```
+
+> ⚠️ **보안 참고**: DB 비밀번호는 SSM Parameter Store (SecureString)에 저장됩니다.
 
 ## 배포 후 확인
 

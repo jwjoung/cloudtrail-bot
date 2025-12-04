@@ -3,6 +3,10 @@ AWS 계정 Credential 획득 모듈
 
 DB에서 계정 정보를 조회하고 Bridge Role Chaining을 통해
 대상 계정의 임시 자격증명을 획득합니다.
+
+DB 접속 정보는 다음 우선순위로 로드됩니다:
+1. 환경변수 (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT)
+2. SSM Parameter Store (/fitcloud/{env_type}/db/...)
 """
 
 import os
@@ -25,6 +29,58 @@ _ssm_client = None
 _db_pool_cache: Dict[str, pymysqlpool.ConnectionPool] = {}
 
 
+def _get_env_or_ssm(env_key: str, ssm_path: str, decrypt: bool = True) -> str:
+    """
+    환경변수를 먼저 확인하고, 없으면 SSM Parameter Store에서 로드합니다.
+    
+    Args:
+        env_key: 환경변수 키
+        ssm_path: SSM Parameter Store 경로
+        decrypt: SSM 파라미터 복호화 여부
+    
+    Returns:
+        설정값
+    """
+    # 환경변수 우선
+    env_value = os.environ.get(env_key)
+    if env_value:
+        return env_value
+    
+    # SSM에서 로드
+    return load_parameter(ssm_path)
+
+
+def _load_parameter_safe(param_name: str) -> Optional[str]:
+    """SSM Parameter Store에서 파라미터를 안전하게 로드합니다 (없으면 None)."""
+    try:
+        return load_parameter(param_name)
+    except Exception:
+        return None
+
+
+def _get_db_secret_title(env_type: str) -> str:
+    """
+    DB secret title을 가져옵니다.
+    
+    우선순위:
+    1. 환경변수 DB_SECRET_TITLE
+    2. SSM: /cloudtrail-bot/{env_type}/db/secret-title
+    3. SSM: /fitcloud/{env_type}/db/secret_title
+    """
+    # 1. 환경변수 확인
+    secret_title = os.environ.get("DB_SECRET_TITLE")
+    if secret_title:
+        return secret_title
+    
+    # 2. cloudtrail-bot SSM 경로 확인
+    secret_title = _load_parameter_safe(f"/cloudtrail-bot/{env_type}/db/secret-title")
+    if secret_title:
+        return secret_title
+    
+    # 3. fitcloud SSM 경로 사용
+    return load_parameter(f"/fitcloud/{env_type}/db/secret_title")
+
+
 def _get_ssm_client():
     """SSM 클라이언트를 가져옵니다 (싱글톤)."""
     global _ssm_client
@@ -40,23 +96,54 @@ def load_parameter(param_name: str) -> str:
 
 
 def get_db_connection_pool(env_type: str) -> pymysqlpool.ConnectionPool:
-    """DB 연결 풀을 생성합니다 (캐싱)."""
+    """
+    DB 연결 풀을 생성합니다 (캐싱).
+    
+    설정 우선순위:
+    1. 환경변수 (DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, DB_PORT)
+    2. SSM: /cloudtrail-bot/{env_type}/db/* (CloudFormation 배포 시 설정)
+    3. SSM: /fitcloud/{env_type}/db/* (기존 인프라 호환)
+    """
     global _db_pool_cache
     
     if env_type in _db_pool_cache:
         return _db_pool_cache[env_type]
     
-    aws_mysql_host = load_parameter(f"/fitcloud/{env_type}/db/host")
-    aws_mysql_id = load_parameter(f"/fitcloud/{env_type}/db/user/admin/id")
-    aws_mysql_password = load_parameter(f"/fitcloud/{env_type}/db/user/admin/pw")
-    aws_mysql_db = load_parameter(f"/fitcloud/{env_type}/db/db")
+    # 1. 환경변수 확인
+    db_host = os.environ.get("DB_HOST")
+    db_user = os.environ.get("DB_USER")
+    db_password = os.environ.get("DB_PASSWORD")
+    db_name = os.environ.get("DB_NAME")
+    db_port = int(os.environ.get("DB_PORT", "3306"))
+    
+    # 2. cloudtrail-bot SSM 경로 확인 (환경변수가 없는 경우)
+    if not db_host:
+        fitcloud_ssm_prefix = f"/fitcloud/prd/db/ts"
+        db_host = _load_parameter_safe(f"{fitcloud_ssm_prefix}/host")
+        
+        if db_host:
+            logger.info(f"DB 설정을 {fitcloud_ssm_prefix}에서 로드합니다")
+            db_user = _load_parameter_safe(f"{fitcloud_ssm_prefix}/id")
+            db_password = _load_parameter_safe(f"{fitcloud_ssm_prefix}/pw")
+            db_name = "edp"
+            db_port = 3306
+    
+    # 3. fitcloud SSM 경로 확인 (기존 인프라 호환)
+    if not db_host:
+        logger.info(f"DB 설정을 /fitcloud/{env_type}/db에서 로드합니다")
+        db_host = load_parameter(f"/fitcloud/{env_type}/db/host")
+        db_user = load_parameter(f"/fitcloud/{env_type}/db/user/admin/id")
+        db_password = load_parameter(f"/fitcloud/{env_type}/db/user/admin/pw")
+        db_name = load_parameter(f"/fitcloud/{env_type}/db/db")
+    
+    logger.info(f"DB 연결 설정: host={db_host}, db={db_name}, user={db_user}")
     
     db_config = {
-        "host": aws_mysql_host,
-        "port": 3306,
-        "user": aws_mysql_id,
-        "password": aws_mysql_password,
-        "database": aws_mysql_db,
+        "host": db_host,
+        "port": db_port,
+        "user": db_user,
+        "password": db_password,
+        "database": db_name,
         "charset": "utf8"
     }
     
@@ -115,7 +202,7 @@ def get_account_info_from_db(account_id: str, env_type: str = "dev") -> Optional
             LIMIT 1;
         """
 
-        secret_title = load_parameter(f"/fitcloud/{env_type}/db/secret_title")
+        secret_title = _get_db_secret_title(env_type)
         curs.execute(sql, (secret_title, account_id, secret_title))
         
         row = curs.fetchone()
@@ -189,7 +276,7 @@ def search_account_by_name(corp_name: str, env_type: str = "dev") -> Optional[Di
             LIMIT 1;
         """
 
-        secret_title = load_parameter(f"/fitcloud/{env_type}/db/secret_title")
+        secret_title = _get_db_secret_title(env_type)
         search_pattern = f"%{corp_name}%"
         curs.execute(sql, (secret_title, search_pattern, secret_title))
         

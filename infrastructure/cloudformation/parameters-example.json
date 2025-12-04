@@ -46,6 +46,30 @@
   {
     "ParameterKey": "S3KeyPrefix",
     "ParameterValue": "cloudtrail-bot/"
+  },
+  {
+    "ParameterKey": "DBHost",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DBPort",
+    "ParameterValue": "3306"
+  },
+  {
+    "ParameterKey": "DBUser",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DBPassword",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DBName",
+    "ParameterValue": ""
+  },
+  {
+    "ParameterKey": "DBSecretTitle",
+    "ParameterValue": ""
   }
 ]
 

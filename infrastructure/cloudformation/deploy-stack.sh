@@ -31,10 +31,23 @@ usage() {
     echo "  --app-token           Slack App Token (or set SLACK_APP_TOKEN env var)"
     echo "  --git-repo            Git repository URL for source code"
     echo "  --s3-bucket           S3 bucket for source code"
+    echo ""
+    echo "Database Options (optional - uses SSM Parameter Store if not provided):"
+    echo "  --db-host             Database host"
+    echo "  --db-port             Database port (default: 3306)"
+    echo "  --db-user             Database username"
+    echo "  --db-password         Database password"
+    echo "  --db-name             Database name"
+    echo "  --db-secret           DB secret title for encryption"
+    echo ""
     echo "  -h, --help            Show this help message"
     echo ""
     echo "Example:"
     echo "  $0 -v vpc-12345678 -s subnet-12345678 --bot-token xoxb-... --app-token xapp-..."
+    echo ""
+    echo "Example with DB:"
+    echo "  $0 -v vpc-xxx -s subnet-xxx --bot-token xoxb-... --app-token xapp-... \\"
+    echo "     --db-host mydb.rds.amazonaws.com --db-user admin --db-password secret --db-name mydb"
     exit 1
 }
 
@@ -83,6 +96,30 @@ while [[ $# -gt 0 ]]; do
             ;;
         --s3-bucket)
             S3_BUCKET="$2"
+            shift 2
+            ;;
+        --db-host)
+            DB_HOST="$2"
+            shift 2
+            ;;
+        --db-port)
+            DB_PORT="$2"
+            shift 2
+            ;;
+        --db-user)
+            DB_USER="$2"
+            shift 2
+            ;;
+        --db-password)
+            DB_PASSWORD="$2"
+            shift 2
+            ;;
+        --db-name)
+            DB_NAME="$2"
+            shift 2
+            ;;
+        --db-secret)
+            DB_SECRET_TITLE="$2"
             shift 2
             ;;
         -h|--help)
@@ -148,6 +185,31 @@ fi
 
 if [ -n "$S3_BUCKET" ]; then
     PARAMS="${PARAMS} ParameterKey=S3BucketName,ParameterValue=${S3_BUCKET}"
+fi
+
+# Database parameters (optional)
+if [ -n "$DB_HOST" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBHost,ParameterValue=${DB_HOST}"
+fi
+
+if [ -n "$DB_PORT" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBPort,ParameterValue=${DB_PORT}"
+fi
+
+if [ -n "$DB_USER" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBUser,ParameterValue=${DB_USER}"
+fi
+
+if [ -n "$DB_PASSWORD" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBPassword,ParameterValue=${DB_PASSWORD}"
+fi
+
+if [ -n "$DB_NAME" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBName,ParameterValue=${DB_NAME}"
+fi
+
+if [ -n "$DB_SECRET_TITLE" ]; then
+    PARAMS="${PARAMS} ParameterKey=DBSecretTitle,ParameterValue=${DB_SECRET_TITLE}"
 fi
 
 # 스택 존재 여부 확인
