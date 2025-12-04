@@ -131,7 +131,7 @@ Conditions:
 Mappings:
   RegionMap:
     ap-northeast-2:
-      AMI: ami-0c9c942bd7bf113a2  # Amazon Linux 2023 ARM64
+      AMI: ami-04fcc2023d6e37430  # Amazon Linux 2023 ARM64
     ap-northeast-1:
       AMI: ami-0d52744d6551d851e
     us-east-1:
