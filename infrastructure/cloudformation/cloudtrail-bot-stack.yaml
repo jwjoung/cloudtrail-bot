@@ -423,9 +423,12 @@ Resources:
           exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
           echo "Starting CloudTrail Bot setup..."
           
-          # Update system
+          # Update system (clean cache first to avoid stale package errors)
+          dnf clean all
+          dnf makecache
           dnf update -y
           dnf install -y python3.11 python3.11-pip git
+          dnf install -y mariadb-connector-c-devel gcc python3.11-devel
           
           # Create application directory
           mkdir -p /opt/cloudtrail-bot
